@@ -1,0 +1,131 @@
+from fastapi import FastAPI, HTTPException, Query, Depends
+from fastapi_pagination import Page, paginate, add_pagination
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, create_engine, exc
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship, Session
+import uuid 
+
+DATABASE_URL = "sqlite:///./test.db"  # Ajuste conforme seu banco
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(bind=engine, autoflush=False)
+Base = declarative_base()
+
+app = FastAPI()
+
+# MODELOS
+class Categoria(Base):
+    __tablename__ = "categoria"
+    pk_id = Column(Integer, primary_key=True, index=True)
+    id = Column(String, default=lambda: str(uuid.uuid4()), unique=True)
+    nome = Column(String(10), unique=True)
+
+class CentroTreinamento(Base):
+    __tablename__ = "centro_treinamento"
+    pk_id = Column(Integer, primary_key=True, index=True)
+    id = Column(String, default=lambda: str(uuid.uuid4()), unique=True)
+    nome = Column(String(20), unique=True)
+    endereco = Column(String(60))
+    proprietario = Column(String(30))
+
+class Atleta(Base):
+    __tablename__ = "atleta"
+    pk_id = Column(Integer, primary_key=True, index=True)
+    id = Column(String, default=lambda: str(uuid.uuid4()), unique=True)
+    nome = Column(String(50))
+    cpf = Column(String(11), unique=True)
+    idade = Column(Integer)
+    peso = Column(Float(10, 2))
+    altura = Column(Float(10, 2))
+    sexo = Column(String(1))
+    centro_treinamento_id = Column(Integer, ForeignKey("centro_treinamento.pk_id"))
+    categoria_id = Column(Integer, ForeignKey("categoria.pk_id"))
+
+    centro_treinamento = relationship("CentroTreinamento")
+    categoria = relationship("Categoria")
+
+Base.metadata.create_all(bind=engine)
+
+# DEPENDÊNCIA
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# CATEGORIA
+@app.post("/categoria/")
+def criar_categoria(nome: str, db: Session = Depends(get_db)):
+    cat = Categoria(nome=nome)
+    db.add(cat)
+    db.commit()
+    db.refresh(cat)
+    return cat
+
+@app.get("/categoria/", response_model=Page[dict])
+def listar_categorias(db: Session = Depends(get_db)):
+    categorias = db.query(Categoria).all()
+    return paginate([{"nome": c.nome, "id": c.id} for c in categorias])
+
+# CENTRO TREINAMENTO
+@app.post("/centro_treinamento/")
+def criar_centro(nome: str, endereco: str, proprietario: str, db: Session = Depends(get_db)):
+    centro = CentroTreinamento(nome=nome, endereco=endereco, proprietario=proprietario)
+    db.add(centro)
+    db.commit()
+    db.refresh(centro)
+    return centro
+
+@app.get("/centro_treinamento/", response_model=Page[dict])
+def listar_centros(db: Session = Depends(get_db)):
+    centros = db.query(CentroTreinamento).all()
+    return paginate([{"nome": c.nome, "id": c.id, "proprietario": c.proprietario} for c in centros])
+
+# ATLETA
+@app.post("/atleta/")
+def criar_atleta(nome: str, cpf: str, idade: int, peso: float, altura: float, sexo: str,
+                 centro_treinamento_id: int, categoria_id: int, db: Session = Depends(get_db)):
+    try:
+        atleta = Atleta(
+            nome=nome,
+            cpf=cpf,
+            idade=idade,
+            peso=peso,
+            altura=altura,
+            sexo=sexo,
+            centro_treinamento_id=centro_treinamento_id,
+            categoria_id=categoria_id
+        )
+        db.add(atleta)
+        db.commit()
+        db.refresh(atleta)
+        return atleta
+    except exc.IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=303, detail=f"Já existe um atleta cadastrado com o cpf: {cpf}")
+
+@app.get("/atleta/", response_model=Page[dict])
+def listar_atletas(nome: str = Query(None), cpf: str = Query(None), db: Session = Depends(get_db)):
+    query = db.query(Atleta)
+    if nome:
+        query = query.filter(Atleta.nome.ilike(f"%{nome}%"))
+    if cpf:
+        query = query.filter(Atleta.cpf == cpf)
+
+    atletas = query.all()
+    resultado = []
+    for atleta in atletas:
+        resultado.append({
+            "nome": atleta.nome,
+            "cpf": atleta.cpf,
+            "idade": atleta.idade,
+            "peso": atleta.peso,
+            "altura": atleta.altura,
+            "sexo": atleta.sexo,
+            "centro_treinamento": atleta.centro_treinamento.nome if atleta.centro_treinamento else None,
+            "categoria": atleta.categoria.nome if atleta.categoria else None
+        })
+    return paginate(resultado)
+
+# Ativando paginação
+add_pagination(app)
